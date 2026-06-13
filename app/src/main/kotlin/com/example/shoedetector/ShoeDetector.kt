@@ -8,15 +8,14 @@ import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import java.nio.FloatBuffer
 import java.util.Collections
-
 
 class ShoeDetector(private val context: Context) {
     private val ortEnv: OrtEnvironment = OrtEnvironment.getEnvironment()
     private val ortSession: OrtSession
     private val inputName: String
     private val outputName: String
+    private val modelInputSize: Int
 
     private val labels = listOf(
         "Boots", "Clogs", "Dress_Shoes", "Flats",
@@ -37,20 +36,37 @@ class ShoeDetector(private val context: Context) {
         ortSession = ortEnv.createSession(modelBytes)
         inputName = ortSession.inputNames.iterator().next()
         outputName = ortSession.outputNames.iterator().next()
-        Log.d("ShoeDetector", "Session created. Input: $inputName, Output: $outputName")
+        
+        // Auto-detect input size from model metadata
+        val inputShape = ortSession.inputInfo[inputName]?.info?.asArray()?.get(2) ?: 640L
+        modelInputSize = inputShape.toInt()
+        
+        Log.d("ShoeDetector", "Session created. Input: $inputName ($modelInputSize x $modelInputSize), Output: $outputName")
     }
 
     fun detect(bitmap: Bitmap): List<Detection> {
-        val imgSize = 640
-        val resizedBitmap = Bitmap.createScaledBitmap(bitmap, imgSize, imgSize, true)
+        val w = bitmap.width
+        val h = bitmap.height
+        val scale = modelInputSize.toFloat() / maxOf(w, h)
+        val nw = (w * scale).toInt()
+        val nh = (h * scale).toInt()
         
-        // Pre-process: Bitmap to FloatBuffer (NCHW: 1, 3, 640, 640)
-        val floatBuffer = ByteBuffer.allocateDirect(1 * 3 * imgSize * imgSize * 4)
+        // Letterboxing: Resize while maintaining aspect ratio, then pad to square
+        val resizedBitmap = Bitmap.createScaledBitmap(bitmap, nw, nh, true)
+        val letterboxedBitmap = Bitmap.createBitmap(modelInputSize, modelInputSize, Bitmap.Config.ARGB_8888)
+        val canvas = android.graphics.Canvas(letterboxedBitmap)
+        canvas.drawColor(android.graphics.Color.BLACK)
+        val left = (modelInputSize - nw) / 2f
+        val top = (modelInputSize - nh) / 2f
+        canvas.drawBitmap(resizedBitmap, left, top, null)
+        
+        // Pre-process: Bitmap to FloatBuffer (NCHW)
+        val floatBuffer = ByteBuffer.allocateDirect(1 * 3 * modelInputSize * modelInputSize * 4)
             .order(ByteOrder.nativeOrder())
             .asFloatBuffer()
         
-        val pixels = IntArray(imgSize * imgSize)
-        resizedBitmap.getPixels(pixels, 0, imgSize, 0, 0, imgSize, imgSize)
+        val pixels = IntArray(modelInputSize * modelInputSize)
+        letterboxedBitmap.getPixels(pixels, 0, modelInputSize, 0, 0, modelInputSize, modelInputSize)
 
         // R channel
         for (pixel in pixels) floatBuffer.put(((pixel shr 16) and 0xFF) / 255.0f)
@@ -61,36 +77,33 @@ class ShoeDetector(private val context: Context) {
         
         floatBuffer.rewind()
 
-        val inputTensor = OnnxTensor.createTensor(ortEnv, floatBuffer, longArrayOf(1, 3, imgSize.toLong(), imgSize.toLong()))
+        val inputTensor = OnnxTensor.createTensor(ortEnv, floatBuffer, longArrayOf(1, 3, modelInputSize.toLong(), modelInputSize.toLong()))
         
         val results = ortSession.run(Collections.singletonMap(inputName, inputTensor))
         val outputTensor = results[0]
-        Log.d("ShoeDetector", "Output info: ${outputTensor.info}")
-        val output = outputTensor.value as Array<*> // [1][13][8400]
+        val output = outputTensor.value as Array<*> 
         
-        // Robust handling of different output shapes
         val data = if (output[0] is Array<*>) {
-            output[0] as Array<FloatArray> // [13][8400]
+            output[0] as Array<FloatArray>
         } else {
-            // If it's a primitive float[][], we might need to handle it differently in Kotlin
-            // but usually ONNX Runtime returns Array<FloatArray> for 2D
             output[0] as Array<FloatArray>
         }
 
-        return postProcess(data, bitmap.width, bitmap.height)
+        return postProcess(data, nw, nh, left, top)
     }
 
-    private fun postProcess(data: Array<FloatArray>, imgWidth: Int, imgHeight: Int): List<Detection> {
+    private fun postProcess(
+        data: Array<FloatArray>, 
+        newWidth: Int,
+        newHeight: Int,
+        padLeft: Float,
+        padTop: Float
+    ): List<Detection> {
         val detections = mutableListOf<Detection>()
-        
-        // Auto-detect dimensions: YOLOv8 is usually [4+N, 8400]
-        // But some exports might be [8400, 4+N]
         val isTransposed = data.size > data[0].size
         val numAnchors = if (isTransposed) data.size else data[0].size
         val numClasses = if (isTransposed) data[0].size - 4 else data.size - 4
-        val confidenceThreshold = 0.15f // Lowered threshold further
-
-        Log.d("ShoeDetector", "Processing: anchors=$numAnchors, classes=$numClasses, transposed=$isTransposed")
+        val confidenceThreshold = 0.05f 
 
         var highestScoreFound = 0f
         for (i in 0 until numAnchors) {
@@ -112,22 +125,23 @@ class ShoeDetector(private val context: Context) {
                 val w = if (isTransposed) data[i][2] else data[2][i]
                 val h = if (isTransposed) data[i][3] else data[3][i]
 
-                val x1 = (cx - w / 2) * imgWidth / 640f
-                val y1 = (cy - h / 2) * imgHeight / 640f
-                val x2 = (cx + w / 2) * imgWidth / 640f
-                val y2 = (cy + h / 2) * imgHeight / 640f
+                // Final normalized coordinates relative to original image
+                val normX1 = (cx - w / 2 - padLeft) / newWidth
+                val normY1 = (cy - h / 2 - padTop) / newHeight
+                val normX2 = (cx + w / 2 - padLeft) / newWidth
+                val normY2 = (cy + h / 2 - padTop) / newHeight
 
                 detections.add(
                     Detection(
                         if (classId in labels.indices) labels[classId] else "Unknown",
                         maxClassScore,
-                        x1, y1, x2, y2
+                        normX1, normY1, normX2, normY2
                     )
                 )
             }
         }
 
-        Log.d("ShoeDetector", "Detections found: ${detections.size}, highest score: $highestScoreFound")
+        Log.d("ShoeDetector", "Detections: ${detections.size}, max score: $highestScoreFound")
         return nms(detections)
     }
 

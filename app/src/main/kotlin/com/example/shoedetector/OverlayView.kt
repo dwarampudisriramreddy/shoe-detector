@@ -35,19 +35,24 @@ class OverlayView(context: Context, attrs: AttributeSet?) : View(context, attrs)
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         for (detection in detections) {
-            val rect = RectF(detection.x1, detection.y1, detection.x2, detection.y2)
+            val x1 = detection.x1 * width
+            val y1 = detection.y1 * height
+            val x2 = detection.x2 * width
+            val y2 = detection.y2 * height
+
+            val rect = RectF(x1, y1, x2, y2)
             canvas.drawRect(rect, boxPaint)
             
             val text = "${detection.label} ${(detection.confidence * 100).toInt()}%"
             val textWidth = textPaint.measureText(text)
             canvas.drawRect(
-                detection.x1,
-                detection.y1 - 50f,
-                detection.x1 + textWidth + 10f,
-                detection.y1,
+                x1,
+                y1 - 50f,
+                x1 + textWidth + 10f,
+                y1,
                 textBackgroundPaint
             )
-            canvas.drawText(text, detection.x1 + 5f, detection.y1 - 10f, textPaint)
+            canvas.drawText(text, x1 + 5f, y1 - 10f, textPaint)
         }
     }
 }
