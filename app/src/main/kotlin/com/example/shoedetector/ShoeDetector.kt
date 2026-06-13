@@ -2,17 +2,21 @@ package com.example.shoedetector
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.Matrix
-import ai.onnxruntime.OnnxJavaType
+import android.util.Log
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.nio.FloatBuffer
 import java.util.Collections
+
 
 class ShoeDetector(private val context: Context) {
     private val ortEnv: OrtEnvironment = OrtEnvironment.getEnvironment()
     private val ortSession: OrtSession
+    private val inputName: String
+    private val outputName: String
 
     private val labels = listOf(
         "Boots", "Clogs", "Dress_Shoes", "Flats",
@@ -31,6 +35,9 @@ class ShoeDetector(private val context: Context) {
     init {
         val modelBytes = context.assets.open("shoe.onnx").readBytes()
         ortSession = ortEnv.createSession(modelBytes)
+        inputName = ortSession.inputNames.iterator().next()
+        outputName = ortSession.outputNames.iterator().next()
+        Log.d("ShoeDetector", "Session created. Input: $inputName, Output: $outputName")
     }
 
     fun detect(bitmap: Bitmap): List<Detection> {
@@ -38,7 +45,10 @@ class ShoeDetector(private val context: Context) {
         val resizedBitmap = Bitmap.createScaledBitmap(bitmap, imgSize, imgSize, true)
         
         // Pre-process: Bitmap to FloatBuffer (NCHW: 1, 3, 640, 640)
-        val floatBuffer = FloatBuffer.allocate(1 * 3 * imgSize * imgSize)
+        val floatBuffer = ByteBuffer.allocateDirect(1 * 3 * imgSize * imgSize * 4)
+            .order(ByteOrder.nativeOrder())
+            .asFloatBuffer()
+        
         val pixels = IntArray(imgSize * imgSize)
         resizedBitmap.getPixels(pixels, 0, imgSize, 0, 0, imgSize, imgSize)
 
@@ -53,24 +63,31 @@ class ShoeDetector(private val context: Context) {
 
         val inputTensor = OnnxTensor.createTensor(ortEnv, floatBuffer, longArrayOf(1, 3, imgSize.toLong(), imgSize.toLong()))
         
-        val results = ortSession.run(Collections.singletonMap("images", inputTensor))
+        val results = ortSession.run(Collections.singletonMap(inputName, inputTensor))
         val output = results[0].value as Array<*> // [1][13][8400]
-        val data = output[0] as Array<FloatArray> // [13][8400]
+        
+        // Robust handling of different output shapes
+        val data = if (output[0] is Array<*>) {
+            output[0] as Array<FloatArray> // [13][8400]
+        } else {
+            // If it's a primitive float[][], we might need to handle it differently in Kotlin
+            // but usually ONNX Runtime returns Array<FloatArray> for 2D
+            output[0] as Array<FloatArray>
+        }
 
         return postProcess(data, bitmap.width, bitmap.height)
     }
 
     private fun postProcess(data: Array<FloatArray>, imgWidth: Int, imgHeight: Int): List<Detection> {
         val detections = mutableListOf<Detection>()
-        val numAnchors = 8400
-        val numClasses = 9
-        val confidenceThreshold = 0.45f
+        val numAnchors = data[0].size // 8400
+        val numClasses = data.size - 4 // 9
+        val confidenceThreshold = 0.25f // Lowered threshold
 
         for (i in 0 until numAnchors) {
             var maxClassScore = 0f
             var classId = -1
 
-            // Find max class score (classes start at index 4)
             for (c in 0 until numClasses) {
                 val score = data[c + 4][i]
                 if (score > maxClassScore) {
@@ -80,7 +97,6 @@ class ShoeDetector(private val context: Context) {
             }
 
             if (maxClassScore > confidenceThreshold) {
-                // YOLOv8 output is [cx, cy, w, h] in pixels of 640x640
                 val cx = data[0][i]
                 val cy = data[1][i]
                 val w = data[2][i]
@@ -93,7 +109,7 @@ class ShoeDetector(private val context: Context) {
 
                 detections.add(
                     Detection(
-                        labels[classId],
+                        if (classId in labels.indices) labels[classId] else "Unknown",
                         maxClassScore,
                         x1, y1, x2, y2
                     )
@@ -101,6 +117,7 @@ class ShoeDetector(private val context: Context) {
             }
         }
 
+        Log.d("ShoeDetector", "Detections found: ${detections.size}")
         return nms(detections)
     }
 

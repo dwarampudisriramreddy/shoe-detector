@@ -76,6 +76,8 @@ class MainActivity : AppCompatActivity() {
                             runOnUiThread {
                                 updateUI(detections)
                             }
+                        } else {
+                            Log.w(TAG, "Bitmap from PreviewView is null")
                         }
                         imageProxy.close()
                     }
