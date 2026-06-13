@@ -82,9 +82,15 @@ class ShoeDetector(private val context: Context) {
 
     private fun postProcess(data: Array<FloatArray>, imgWidth: Int, imgHeight: Int): List<Detection> {
         val detections = mutableListOf<Detection>()
-        val numAnchors = data[0].size // 8400
-        val numClasses = data.size - 4 // 9
-        val confidenceThreshold = 0.25f // Lowered threshold
+        
+        // Auto-detect dimensions: YOLOv8 is usually [4+N, 8400]
+        // But some exports might be [8400, 4+N]
+        val isTransposed = data.size > data[0].size
+        val numAnchors = if (isTransposed) data.size else data[0].size
+        val numClasses = if (isTransposed) data[0].size - 4 else data.size - 4
+        val confidenceThreshold = 0.15f // Lowered threshold further
+
+        Log.d("ShoeDetector", "Processing: anchors=$numAnchors, classes=$numClasses, transposed=$isTransposed")
 
         var highestScoreFound = 0f
         for (i in 0 until numAnchors) {
@@ -92,7 +98,7 @@ class ShoeDetector(private val context: Context) {
             var classId = -1
 
             for (c in 0 until numClasses) {
-                val score = data[c + 4][i]
+                val score = if (isTransposed) data[i][c + 4] else data[c + 4][i]
                 if (score > maxClassScore) {
                     maxClassScore = score
                     classId = c
@@ -101,10 +107,10 @@ class ShoeDetector(private val context: Context) {
             if (maxClassScore > highestScoreFound) highestScoreFound = maxClassScore
 
             if (maxClassScore > confidenceThreshold) {
-                val cx = data[0][i]
-                val cy = data[1][i]
-                val w = data[2][i]
-                val h = data[3][i]
+                val cx = if (isTransposed) data[i][0] else data[0][i]
+                val cy = if (isTransposed) data[i][1] else data[1][i]
+                val w = if (isTransposed) data[i][2] else data[2][i]
+                val h = if (isTransposed) data[i][3] else data[3][i]
 
                 val x1 = (cx - w / 2) * imgWidth / 640f
                 val y1 = (cy - h / 2) * imgHeight / 640f

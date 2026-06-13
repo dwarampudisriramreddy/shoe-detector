@@ -67,6 +67,7 @@ class MainActivity : AppCompatActivity() {
             // ImageAnalysis for shoe detection
             val imageAnalyzer = ImageAnalysis.Builder()
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                .setTargetResolution(android.util.Size(1280, 720))
                 .build()
                 .also {
                     it.setAnalyzer(cameraExecutor) { imageProxy ->
