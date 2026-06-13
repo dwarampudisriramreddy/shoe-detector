@@ -64,7 +64,9 @@ class ShoeDetector(private val context: Context) {
         val inputTensor = OnnxTensor.createTensor(ortEnv, floatBuffer, longArrayOf(1, 3, imgSize.toLong(), imgSize.toLong()))
         
         val results = ortSession.run(Collections.singletonMap(inputName, inputTensor))
-        val output = results[0].value as Array<*> // [1][13][8400]
+        val outputTensor = results[0]
+        Log.d("ShoeDetector", "Output info: ${outputTensor.info}")
+        val output = outputTensor.value as Array<*> // [1][13][8400]
         
         // Robust handling of different output shapes
         val data = if (output[0] is Array<*>) {
@@ -84,6 +86,7 @@ class ShoeDetector(private val context: Context) {
         val numClasses = data.size - 4 // 9
         val confidenceThreshold = 0.25f // Lowered threshold
 
+        var highestScoreFound = 0f
         for (i in 0 until numAnchors) {
             var maxClassScore = 0f
             var classId = -1
@@ -95,6 +98,7 @@ class ShoeDetector(private val context: Context) {
                     classId = c
                 }
             }
+            if (maxClassScore > highestScoreFound) highestScoreFound = maxClassScore
 
             if (maxClassScore > confidenceThreshold) {
                 val cx = data[0][i]
@@ -117,7 +121,7 @@ class ShoeDetector(private val context: Context) {
             }
         }
 
-        Log.d("ShoeDetector", "Detections found: ${detections.size}")
+        Log.d("ShoeDetector", "Detections found: ${detections.size}, highest score: $highestScoreFound")
         return nms(detections)
     }
 

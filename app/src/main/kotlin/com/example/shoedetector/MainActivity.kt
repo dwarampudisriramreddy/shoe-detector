@@ -103,6 +103,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateUI(detections: List<ShoeDetector.Detection>) {
+        viewBinding.overlayView.setDetections(detections)
         if (detections.isEmpty()) {
             viewBinding.tvResults.text = "No shoes detected"
         } else {
